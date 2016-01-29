@@ -1,9 +1,25 @@
 #!/usr/bin/python3
-
+#
+# musicmaker.py - take Rhythmbox playlists and put converted
+# versions of the files into desired directory structure for
+# use with less capable player devices.
+#
 # requires:
+# * python3
 # * python3-defusedxml
 # * python3-magic
 # * rhythmbox in use
+# * one or more converters, depending on intended use:
+#   * avconv or ffmpeg + avconv compatibility frontend
+#   * sox
+#   ...and their dependencies (e.g. MP3 encoder)
+#
+# Originally intended to convert music files used on my desktop
+# computer, which I store as .ogg or .flac, and convert them
+# to .mp3 in directory structure suitable for use on NAS, USB
+# sticks for use in car etc.
+#
+# Kind of like making mix tapes in the old days ;)
 
 import argparse
 import os
