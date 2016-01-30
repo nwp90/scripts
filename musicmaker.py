@@ -20,6 +20,12 @@
 # sticks for use in car etc.
 #
 # Kind of like making mix tapes in the old days ;)
+#
+# Like many dirty hacks, it seems to be growing.
+#
+#
+# Nick Phillips <nwp@zepler.net>
+#
 
 import argparse
 import os
@@ -81,13 +87,23 @@ for handler in handlers.values():
 parser = argparse.ArgumentParser(description='Convert a playlist to desired format')
 parser.add_argument('pl_names', metavar='playlist', type=str, nargs='+',
                     help='Names of playlists to copy/transcode')
-parser.add_argument('-t', '--target', dest='target', type=str, required=True, help='Target directory')
-parser.add_argument('-s', '--single', dest='single', action='store_true', default=False, help='Store all files within a single directory (target). Takes precedence over -n option')
-parser.add_argument('-n', '--named', dest='named', action='store_true', default=False, help='Store all files within each playlist under a single directory named as the playlist, under target')
-parser.add_argument('-p', '--profile', dest='profile', type=str, default="mp3", help='Target encoding profile')
-parser.add_argument('-r', '--recode', dest='recode', action='store_true', default=False, help='Recode files already using the target format')
-parser.add_argument('-m', '--mangle', dest='mangle', action='store_true', default=False, help='Mangle possibly-problematic characters in filenames (e.g. if target is a FAT-based filesystem)')
-parser.add_argument('-f', '--force', dest='force', action='store_true', default=False, help='Continue working if target not empty')
+parser.add_argument('-t', '--target', dest='target', type=str, required=True,
+                    help='Target directory')
+parser.add_argument('-s', '--single', dest='single', action='store_true', default=False,
+                    help='Store all files within a single directory (target). '
+                         'Takes precedence over -n option')
+parser.add_argument('-n', '--named', dest='named', action='store_true', default=False,
+                    help='Store all files within each playlist under a single '
+                         'directory named as the playlist, under target')
+parser.add_argument('-p', '--profile', dest='profile', type=str, default="mp3",
+                    help='Target encoding profile')
+parser.add_argument('-r', '--recode', dest='recode', action='store_true', default=False,
+                    help='Recode files already using the target format')
+parser.add_argument('-m', '--mangle', dest='mangle', action='store_true', default=False,
+                    help='Mangle possibly-problematic characters in filenames '
+                         '(e.g. if target is a FAT-based filesystem)')
+parser.add_argument('-f', '--force', dest='force', action='store_true', default=False,
+                    help='Continue working if target not empty')
 
 args = parser.parse_args()
 target = args.target
@@ -132,12 +148,37 @@ for playlist in playlists:
                 sys.stderr.write("Ignoring {uri}.".format(uri=e.text))
                 next
             name = unquote_to_bytes(name)
-            toconvert[name] = {
-                'copy': False,
-                'uri': e.text,
-                'origin': name,
-                'playlist': unquote_to_bytes(plname),
-                }
+            # With -n, may want same file in multiple locations on target,
+            # so use list.
+            if not name in toconvert:
+                toconvert[name] = []
+            elif debug:
+                sys.stderr.write("Current name: {}, playlist: {}\n".format(name, unquote_to_bytes(plname)))
+            # Now avoid copy/converting twice to same destination
+            # Not sure if debugging makes it harder or easier to read.
+            for item in toconvert[name]:
+                if debug:
+                    sys.stderr.write("Comparing to name: {}, playlist: {}\n".format(item['origin'], item['playlist']))
+                if item['origin'] == name:
+                    if item['playlist'] == unquote_to_bytes(plname) or not args.named:
+                        if debug:
+                            sys.stderr.write("MATCHED.\n")
+                        # Break past for loop's else
+                        break
+                    elif debug:
+                        sys.stderr.write("No match (playlist).\n")
+                elif debug:
+                    sys.stderr.write("No match (name).\n")
+            # This else is on the for loop. So we're only doing this if
+            # we didn't match existing name & playlist (and therefore
+            # take the break).
+            else:
+                toconvert[name].append({
+                    'copy': False,
+                    'uri': e.text,
+                    'origin': name,
+                    'playlist': unquote_to_bytes(plname),
+                })
 
 prefix = os.path.dirname(os.path.commonprefix(toconvert.keys()))
 
@@ -151,65 +192,68 @@ if contents and not args.force:
     sys.stderr.write("Target directory '{target}' not empty.\n".format(target=target))
     exit(1)
 
-for item in toconvert.values():
-    if args.single:
-        mungename = os.path.basename(item['origin'])
-    elif args.named:
-        mungename = os.path.join(item['playlist'], os.path.basename(item['origin']))
-    else:
-        mungename = os.path.relpath(item['origin'], prefix)
-    # Get rid of dodgy characters in filename if desired
-    if args.mangle:
-        mungename = re.sub(b'[^a-zA-Z0-9_/.]', b'_', mungename)
-    # Build target path with original filename
-    mungename = os.path.join(target.encode(), mungename)
-    # Get dirname and filename
-    (dirname, oldfilename) = os.path.split(mungename)
-    if debug:
-        sys.stderr.write("dirname: " + pprint.pformat(dirname) + "\n")
-        sys.stderr.write("oldfilename: " + pprint.pformat(oldfilename) + "\n")
-        sys.stderr.write("mungename: " + pprint.pformat(mungename) + "\n")
-    item['dir'] = dirname
-    # Switch or add appropriate extension
-    filenameparts = oldfilename.rsplit(b'.', 1)
-    sys.stderr.write("filenameparts is: " + pprint.pformat(filenameparts) + "\n")
-    if len(filenameparts) == 2 and filenameparts[1].lower().decode('utf8') in extensions:
-        item['extension'] = filenameparts[1].lower().decode('utf8')
+for itemlist in toconvert.values():
+    for item in itemlist:
+        if args.single:
+            mungename = os.path.basename(item['origin'])
+        elif args.named:
+            mungename = os.path.join(item['playlist'], os.path.basename(item['origin']))
+        else:
+            mungename = os.path.relpath(item['origin'], prefix)
+        # Get rid of dodgy characters in filename if desired
+        if args.mangle:
+            mungename = re.sub(b'[^a-zA-Z0-9_/.]', b'_', mungename)
+        # Build target path with original filename
+        mungename = os.path.join(target.encode(), mungename)
+        # Get dirname and filename
+        (dirname, oldfilename) = os.path.split(mungename)
         if debug:
-            sys.stderr.write("newfilename is 0th part of oldfilename plus profile extension\n")        
-        newfilename = b'.'.join((filenameparts[0], profile['ext'].encode()))
-        # While we're at it, set bool to indicate if we can just copy
-        # file rather than transcoding. Decision based on old extension.
-        # Yuk.
-        if filenameparts[1].lower() == profile['ext'] and not args.recode:
-            item['copy'] = True
-    else:
-        item['extension'] = None
-        if debug:
-            sys.stderr.write("newfilename is mungename plus profile extension\n")
-        newfilename = b'.'.join((mungename, profile['ext'].encode()))
-    # Put target back together again
-    item['target'] = os.path.join(dirname, newfilename)
+            sys.stderr.write("dirname: " + pprint.pformat(dirname) + "\n")
+            sys.stderr.write("oldfilename: " + pprint.pformat(oldfilename) + "\n")
+            sys.stderr.write("mungename: " + pprint.pformat(mungename) + "\n")
+        item['dir'] = dirname
+        # Switch or add appropriate extension
+        filenameparts = oldfilename.rsplit(b'.', 1)
+        sys.stderr.write("filenameparts is: " + pprint.pformat(filenameparts) + "\n")
+        if len(filenameparts) == 2 and filenameparts[1].lower().decode('utf8') in extensions:
+            item['extension'] = filenameparts[1].lower().decode('utf8')
+            if debug:
+                sys.stderr.write("newfilename is 0th part of oldfilename plus profile extension\n")
+            newfilename = b'.'.join((filenameparts[0], profile['ext'].encode()))
+            # While we're at it, set bool to indicate if we can just copy
+            # file rather than transcoding. Decision based on old extension.
+            # Yuk.
+            if filenameparts[1].lower() == profile['ext'] and not args.recode:
+                item['copy'] = True
+        else:
+            item['extension'] = None
+            if debug:
+                sys.stderr.write("newfilename is mungename plus profile extension\n")
+            newfilename = b'.'.join((mungename, profile['ext'].encode()))
+        # Put target back together again
+        item['target'] = os.path.join(dirname, newfilename)
 
 # Debug info
-pprint.pprint(toconvert)
+if debug:
+    sys.stderr.write(pprint.pformat(toconvert) + "\n")
 
 # Convert/copy ALL THE THINGS.
-for item in toconvert.values():
-    if os.path.exists(item['target']):
-        print("Skipping target (exists): {target}".format(target=item['target']))
-        continue
-    if not os.path.isdir(item['dir']):
-        print("Creating directory: {dirname}".format(dirname=item['dir']))
-        subprocess.call(['mkdir', '-p', item['dir']])
-    if item['copy']:
-        cmd = ['cp', item['origin'], item['target']]
-        print("Copying: " + ' '.join(cmd))
-        subprocess.call(cmd)
-    else:
-        for converter in preference:
-            if item['extension'] in handlers[converter]:
-                convert(item, converter, profile)
-                break
+for itemlist in toconvert.values():
+    for item in itemlist:
+        if os.path.exists(item['target']):
+            print("Skipping target (exists): {target}".format(target=item['target']))
+            continue
+        if not os.path.isdir(item['dir']):
+            print("Creating directory: {dirname}".format(dirname=item['dir']))
+            subprocess.call(['mkdir', '-p', item['dir']])
+        if item['copy']:
+            cmd = ['cp', item['origin'], item['target']]
+            print("Copying: " + ' '.join(cmd))
+            subprocess.call(cmd)
         else:
-            sys.stderr.write('No handler for extension: {ext}\n'.format(ext=item['extension']))
+            for converter in preference:
+                if item['extension'] in handlers[converter]:
+                    convert(item, converter, profile)
+                    break
+            else:
+                sys.stderr.write('No handler for extension: {ext}\n'.format(ext=item['extension']))
