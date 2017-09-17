@@ -40,7 +40,7 @@ from urllib.parse import urlparse, unquote, unquote_to_bytes
 
 debug = 1
 
-preference = ['sox', 'avconv']
+preference = ['sox', 'avconv', 'ffmpeg']
 
 handlers = {
     'sox': set([
@@ -53,6 +53,17 @@ handlers = {
             'au',
             ]),
     'avconv': set([
+            'mp3',
+            'ogg',
+            'oga',
+            'flac',
+            'wav',
+            'aac',
+            'aiff',
+            'au',
+            'm4a',
+            ]),
+    'ffmpeg': set([
             'mp3',
             'ogg',
             'oga',
@@ -252,8 +263,11 @@ for itemlist in toconvert.values():
             subprocess.call(cmd)
         else:
             for converter in preference:
-                if item['extension'] in handlers[converter]:
-                    convert(item, converter, profile)
+                try:
+                    if item['extension'] in handlers[converter]:
+                        convert(item, converter, profile)
                     break
+                except FileNotFoundError as e:
+                    print("Unable to use preferred converter '%s', File Not Found.\n" % converter)
             else:
                 sys.stderr.write('No handler for extension: {ext}\n'.format(ext=item['extension']))
