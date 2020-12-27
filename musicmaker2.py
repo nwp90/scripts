@@ -34,6 +34,7 @@ import pprint
 import subprocess
 import collections
 import re
+import unicodedata
 #import magic
 from defusedxml.ElementTree import parse as xmlparse
 from urllib.parse import urlparse, unquote, unquote_to_bytes
@@ -91,6 +92,9 @@ profiles = {
         },
 }
 
+class UnknownConverter(Exception):
+    pass
+
 extensions = set()
 for handler in handlers.values():
     extensions.update(handler)
@@ -121,6 +125,13 @@ parser.add_argument('-y', '--translateto', dest='translateto', type=str, default
                     help='Path translation modified')
 parser.add_argument('-o', '--origin', dest='origin', type=str, default=None,
                     help='Origin of playlists (file or dir path depending on playlist type)')
+parser.add_argument('-S', '--synofix', dest='synofix', action='store_true', default=False,
+                    help='Mangle paths from m3u files to work around bug in Synology AudioStation')
+#parser.add_argument('-i', '--input-encoding', dest='iconvin', type=str, default='utf-8',
+#                    help='Input (playlist) character encoding')
+#parser.add_argument('-j', '--output-encoding', dest='iconvout', type=str, default='utf-8',
+#                    help='Output (file naming) character encoding')
+
 
 args = parser.parse_args()
 target = args.target
@@ -143,45 +154,51 @@ def debug(level, text):
         sys.stderr.write('%s\n' % text)
 
 
+def dformat(level, *args, **kwargs):
+    global DEBUG
+    if DEBUG >= level:
+        return pprint.pformat(*args, **kwargs)
+    return ""
+
+
 def convert(item, converter, profile):
     print(b"Converting: " + b' => '.join([item['origin'], item['target']]))
     if 0:
         cmd = ['echo', item['origin'], item['target']]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        return
+        return subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if converter == 'sox':
         cmd = ['sox', item['origin']]
         if 'sox' in profile:
             cmd.extend(profile['sox'])
         cmd.append(item['target'])
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     elif converter == 'avconv':
         cmd = ['avconv', '-i', item['origin']]
         if 'avconv' in profile:
             cmd.extend(profile['avconv'])
         cmd.append(item['target'])
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     else:
-        sys.stderr.write("Unknown converter: {conv}\n".format(conv=converter))
+        msg = "Unknown converter: {conv}\n".format(conv=converter)
+        sys.stderr.write(msg)
+        raise UnknownConverter(msg)
 
 
 def addtoconvert(newitem, items, args):
     # Avoid copy/converting twice to same destination
     # Not sure if debugging makes it harder or easier to read.
-    debug(1, 'items:\n%s' % pprint.pformat(items))
+    debug(100, 'items:\n%s' % dformat(100, items))
     for item in items[newitem['origin']]:
-        if DEBUG:
-            sys.stderr.write("Comparing to name: {}, playlist: {}\n".format(item['origin'], item['playlist']))
+        debug(1, "Comparing to name: {}, playlist: {}\n".format(item['origin'], item['playlist']))
         if item['origin'] == newitem['origin']:
             if item['playlist'] == newitem['playlist'] or not args.named:
-                if DEBUG:
-                    sys.stderr.write("MATCHED.\n")
+                debug(1, "MATCHED.")
                 # Break past for loop's else
                 break
-            elif DEBUG:
-                sys.stderr.write("No match (playlist).\n")
-        elif DEBUG:
-            sys.stderr.write("No match (name).\n")
+            else:
+                debug(1, "No match (playlist).")
+        else:
+            debug("No match (name).")
     # This else is on the for loop. So we're only doing this if
     # we didn't match existing name & playlist (and therefore
     # take the break).
@@ -190,25 +207,92 @@ def addtoconvert(newitem, items, args):
     return items
 
 
+# Synology playlists seem to be UTF8 dir, Windows-1252 file
+#
+# But no! Not even windows-1252. Much is, but some already UTF8.
+#
+"""
+This is based on Victor Stinner's pure-Python implementation of PEP 383: the "surrogateescape" error
+handler of Python 3.
+Source: misc/python/surrogateescape.py in https://bitbucket.org/haypo/misc
+"""
+
+# This code is released under the Python license and the BSD 2-clause license
+
+import codecs
+import sys
+
+def maybe1252_handler(exc):
+    mystring = exc.object[exc.start:exc.end]
+
+    try:
+        # we only decode
+        if isinstance(exc, UnicodeDecodeError):
+            # mystring is a byte-string in this case
+            decoded = replace_1252_decode(mystring)
+        else:
+            raise exc
+    except Not1252Error:
+        raise exc
+    return (decoded, exc.end)
+
+class Not1252Error(Exception):
+    pass
+
+def replace_1252_decode(mybytes):
+    """
+    Returns a string
+    """
+    decoded = []
+    for code in mybytes:
+        if 0x80 <= code <= 0xFF:
+            decoded.append(bytes([code]).decode('windows-1252'))
+        elif code <= 0x7F:
+            decoded.append(chr(code))
+        else:
+            # # It may be a bad byte
+            # # Try swallowing it.
+            # continue
+            # print("RAISE!")
+            raise NotASurrogateError
+    return str().join(decoded)
+
+codecs.register_error('maybe1252', maybe1252_handler)
+
+def synofix(mfile):
+    mbase = os.path.basename(mfile)
+    mbase = mbase.decode('utf-8', errors='maybe1252')
+    mdir = os.path.dirname(mfile).decode('utf-8')
+    mfile = os.fsencode(os.path.join(mdir, mbase))
+    return mfile
+
 def m3u_readfile(path, items):
+    # make path be bytes
+    path = os.fsencode(path)
     plname = os.path.basename(path)
-    if plname.endswith('.m3u'):
+    if plname.endswith(b'.m3u'):
         plname = plname[:-4]
-    m3ufile = open(path, 'r')
+    m3ufile = open(path, 'rb')
     # Read and ignore 1st line (expect it to be '#EXTM3U')
     if m3ufile.readline() == '':
         return items
     for mfile in m3ufile.readlines():
-        # strip trailing \n
-        mfile = mfile[:-1]
+        # strip trailing \n, \r
+        mfile = re.sub(rb'[\n\r]*$', b'', mfile)
+        mfile = unquote_to_bytes(mfile)
+        if args.synofix:
+            debug(1, "Synofix item: %s" % dformat(1, mfile))
+            mfile = synofix(mfile)
+            debug(1, "Synofixed item: %s" % dformat(1, mfile))
         if not mfile in items:
-            items[unquote_to_bytes(mfile)] = []
+            debug(1, "Creating toconvert item: %s" % dformat(1, mfile))
+            items[mfile] = []
         addtoconvert(
             {
                 'copy': False,
                 'uri': None,
-                'origin': unquote_to_bytes(mfile),
-                'playlist': unquote_to_bytes(plname),
+                'origin': mfile,
+                'playlist': plname,
             },
             items, args)
 
@@ -251,8 +335,8 @@ def rb_getsources(args):
                 # so use list.
                 if not name in toconvert:
                     toconvert[name] = []
-                elif DEBUG:
-                    sys.stderr.write("Current name: {}, playlist: {}\n".format(name, unquote_to_bytes(plname)))
+                else:
+                    debug(1, "Current name: {}, playlist: {}".format(name, unquote_to_bytes(plname)))
                 addtoconvert(
                     {
                         'copy': False,
@@ -278,7 +362,7 @@ def translate(tfrom, tto, items):
                 unquote_to_bytes(tfrom),
                 unquote_to_bytes(tto),
                 1)
-            if DEBUG: sys.stderr.write("Translating %s to %s!\n" % (item['origin'], neworigin))
+            debug(1, "Translating %s to %s!" % (item['origin'], neworigin))
             newitem['origin'] = neworigin
             newlist.append(newitem)
         newitems[newkey] = newlist
@@ -317,18 +401,16 @@ for itemlist in toconvert.values():
         mungename = os.path.join(target.encode(), mungename)
         # Get dirname and filename
         (dirname, oldfilename) = os.path.split(mungename)
-        if DEBUG:
-            sys.stderr.write("dirname: " + pprint.pformat(dirname) + "\n")
-            sys.stderr.write("oldfilename: " + pprint.pformat(oldfilename) + "\n")
-            sys.stderr.write("mungename: " + pprint.pformat(mungename) + "\n")
+        debug(1, "dirname: " + dformat(1, dirname))
+        debug(1, "oldfilename: " + dformat(1, oldfilename))
+        debug(1, "mungename: " + dformat(1, mungename))
         item['dir'] = dirname
         # Switch or add appropriate extension
         filenameparts = oldfilename.rsplit(b'.', 1)
         sys.stderr.write("filenameparts is: " + pprint.pformat(filenameparts) + "\n")
         if len(filenameparts) == 2 and filenameparts[1].lower().decode('utf8') in extensions:
             item['extension'] = filenameparts[1].lower().decode('utf8')
-            if DEBUG:
-                sys.stderr.write("newfilename is 0th part of oldfilename plus profile extension\n")
+            debug(1, "newfilename is 0th part of oldfilename plus profile extension")
             newfilename = b'.'.join((filenameparts[0], profile['ext'].encode()))
             # While we're at it, set bool to indicate if we can just copy
             # file rather than transcoding. Decision based on old extension.
@@ -337,17 +419,16 @@ for itemlist in toconvert.values():
                 item['copy'] = True
         else:
             item['extension'] = None
-            if DEBUG:
-                sys.stderr.write("newfilename is mungename plus profile extension\n")
+            debug(1, "newfilename is mungename plus profile extension")
             newfilename = b'.'.join((mungename, profile['ext'].encode()))
         # Put target back together again
         item['target'] = os.path.join(dirname, newfilename)
 
 # Debug info
-if DEBUG:
-    sys.stderr.write(pprint.pformat(toconvert) + "\n")
+debug(1, dformat(1, toconvert))
 
 # Convert/copy ALL THE THINGS.
+errors = []
 for itemlist in toconvert.values():
     for item in itemlist:
         if os.path.exists(item['target']):
@@ -364,12 +445,39 @@ for itemlist in toconvert.values():
             print("Copying: " + ' '.join(cmd))
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         else:
+            print("Trying to convert from '%(origin)s' to '%(target)s'..." % item)
             for converter in preference:
                 try:
                     if item['extension'] in handlers[converter]:
-                        convert(item, converter, profile)
+                        status = convert(item, converter, profile)
+                        if status.returncode != 0:
+                            errors.append({
+                                'item': item,
+                                'stdout': status.stdout,
+                                'stderr': status.stderr,
+                                'rc': status.returncode
+                            })
                     break
                 except FileNotFoundError as e:
                     print("Unable to use preferred converter '%s', File Not Found.\n" % converter)
+                    errors.append({
+                        'item': item,
+                        'stdout': '',
+                        'stderr': "Unable to use preferred converter '%s', File Not Found.\n" % converter,
+                        'rc': None
+                    })
             else:
                 sys.stderr.write('No handler for extension: {ext}\n'.format(ext=item['extension']))
+                errors.append({
+                    'item': item,
+                    'stdout': '',
+                    'stderr': 'No handler for extension: {ext}\n'.format(ext=item['extension']),
+                    'rc': None
+                })
+
+if errors:
+    sys.stderr.write("ERRORS:\n")
+for error in errors:
+    sys.stderr.write("*****\nOrigin: %s\nStdout: %s\nStderr: %s\nRC: %s\n" %
+                     (error['item']['origin'], error['stdout'], error['stderr'], error['rc'])
+)
