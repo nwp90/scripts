@@ -102,6 +102,8 @@ for handler in handlers.values():
 parser = argparse.ArgumentParser(description='Convert a playlist to desired format')
 parser.add_argument('pl_names', metavar='playlist', type=str, nargs='+',
                     help='Names of playlists to copy/transcode')
+parser.add_argument('-T', '--type', dest='type', type=str, default='m3u',
+                    help='Playlist type - m3u (m3u files), rb (Rhythmbox), fs (filesystem paths)')
 parser.add_argument('-t', '--target', dest='target', type=str, required=True,
                     help='Target directory')
 parser.add_argument('-s', '--single', dest='single', action='store_true', default=False,
@@ -297,6 +299,36 @@ def m3u_readfile(path, items):
             items, args)
 
 
+def fs_readdir(plpath, items):
+    # seems basename is bytes in bytes out, str in str out?
+    plname = os.path.basename(plpath)
+    for dirname, dirs, files in os.walk(plpath):
+        for mfile in files:
+            mpath = os.fsencode(os.path.join(dirname, mfile))
+            debug(1, "Creating toconvert item in pl '%s': %s" % (plname, dformat(1, mpath)))
+            items[mpath] = []
+            addtoconvert(
+                {
+                    'copy': False,
+                    'uri': None,
+                    'origin': mpath,
+                    'playlist': plname,
+                },
+                items, args)
+
+
+def fs_getsources(args):
+    # Read specified sudirectories of args.origin as playlists, add contents to OrderedDict and return
+    toconvert = collections.OrderedDict()
+    plfilenames = []
+    for pl in args.pl_names:
+        # encode path to bytes
+        path = os.path.join(args.origin, pl).encode('utf-8')
+        if os.path.isdir(path):
+            fs_readdir(path, toconvert)
+    return toconvert
+
+    
 def m3u_getsources(args):
     # Read specified m3u playlists within dir at args.origin, add contents to OrderedDict and return
     toconvert = collections.OrderedDict()
@@ -368,8 +400,15 @@ def translate(tfrom, tto, items):
         newitems[newkey] = newlist
     return newitems
 
-
-toconvert = m3u_getsources(args)
+if args.type == 'm3u':
+    toconvert = m3u_getsources(args)
+elif args.type == 'rb':
+    toconvert = rb_getsources(args)
+elif args.type == 'fs':
+    toconvert = fs_getsources(args)
+else:
+    sys.stderr.write("Unknown playlist type '%s'\n" % args.type)
+    exit (1)
 
 if args.translatefrom is not None:
     toconvert = translate(args.translatefrom, args.translateto, toconvert)
