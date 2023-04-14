@@ -112,6 +112,9 @@ parser.add_argument('-s', '--single', dest='single', action='store_true', defaul
 parser.add_argument('-n', '--named', dest='named', action='store_true', default=False,
                     help='Store all files within each playlist under a single '
                          'directory named as the playlist, under target')
+parser.add_argument('-N', '--number', dest='number', action='store_true', default=False,
+                    help='With -s or -n, prefix all output filenames with a number'
+                         'indicating ordering within the input playlist(s)')
 parser.add_argument('-p', '--profile', dest='profile', type=str, default="mp3",
                     help='Target encoding profile')
 parser.add_argument('-r', '--recode', dest='recode', action='store_true', default=False,
@@ -406,6 +409,14 @@ def translate(tfrom, tto, items):
         newitems[newkey] = newlist
     return newitems
 
+numbering = None
+if args.named or args.single:
+    if args.number:
+        numbering = {
+            'digits': 0,
+            'number': 0,
+        }
+
 if args.type == 'm3u':
     toconvert = m3u_getsources(args)
 elif args.type == 'rb':
@@ -430,6 +441,9 @@ if contents and not args.force:
     # XXX - replace with exception?
     sys.stderr.write("Target directory '{target}' not empty.\n".format(target=target))
     exit(1)
+
+if numbering is not None:
+    numbering['digits'] = len(str(len(toconvert))) + 1
 
 for itemlist in toconvert.values():
     for item in itemlist:
@@ -467,6 +481,10 @@ for itemlist in toconvert.values():
             debug(1, "newfilename is mungename plus profile extension")
             newfilename = b'.'.join((mungename, profile['ext'].encode()))
         # Put target back together again
+        if numbering is not None:
+            numbering['number'] += 1
+            prefix = f"{numbering['number']:0{numbering['digits']}}--".encode()
+            newfilename = prefix + newfilename
         item['target'] = os.path.join(dirname, newfilename)
 
 # Debug info
@@ -491,6 +509,7 @@ for itemlist in toconvert.values():
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         else:
             print("Trying to convert from '%(origin)s' to '%(target)s'..." % item)
+            itemerrs = []
             for converter in preference:
                 try:
                     if item['extension'] in handlers[converter]:
@@ -502,23 +521,24 @@ for itemlist in toconvert.values():
                                 'stderr': status.stderr,
                                 'rc': status.returncode
                             })
-                    break
+                        break
                 except FileNotFoundError as e:
                     print("Unable to use preferred converter '%s', File Not Found.\n" % converter)
-                    errors.append({
+                    itemerrs.append({
                         'item': item,
                         'stdout': '',
                         'stderr': "Unable to use preferred converter '%s', File Not Found.\n" % converter,
                         'rc': None
                     })
             else:
-                sys.stderr.write('No handler for extension: {ext}\n'.format(ext=item['extension']))
-                errors.append({
+                sys.stderr.write('No usable handler for extension: {ext}\n'.format(ext=item['extension']))
+                itemerrs.append({
                     'item': item,
                     'stdout': '',
                     'stderr': 'No handler for extension: {ext}\n'.format(ext=item['extension']),
                     'rc': None
                 })
+                errors.extend(itemerrs)
 
 if errors:
     sys.stderr.write("ERRORS:\n")
