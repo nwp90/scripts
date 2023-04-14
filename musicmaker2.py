@@ -180,6 +180,12 @@ def convert(item, converter, profile):
             cmd.extend(profile['avconv'])
         cmd.append(item['target'])
         return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    elif converter == 'ffmpeg':
+        cmd = ['ffmpeg', '-i', item['origin']]
+        if 'ffmpeg' in profile:
+            cmd.extend(profile['ffmpeg'])
+        cmd.append(item['target'])
+        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     else:
         msg = "Unknown converter: {conv}\n".format(conv=converter)
         sys.stderr.write(msg)
@@ -413,7 +419,7 @@ else:
 if args.translatefrom is not None:
     toconvert = translate(args.translatefrom, args.translateto, toconvert)
 
-prefix = os.path.dirname(os.path.commonprefix(toconvert.keys()))
+prefix = os.path.dirname(os.path.commonprefix(list(toconvert.keys())))
 
 sys.stderr.write("Target is {target}.\n".format(target=target))
 sys.stderr.write("Common prefix is {prefix}.\n".format(prefix=prefix))
